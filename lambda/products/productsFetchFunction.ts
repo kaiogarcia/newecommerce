@@ -1,55 +1,87 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult, Context } from "aws-lambda";
 import { ProductRepository } from "./layers/productsLayer/nodejs/productRepository";
-import { DynamoDB } from "aws-sdk"
+import { DynamoDB } from "aws-sdk";
 
-const productsDdb = process.env.PRODUCTS_DDB!
-const ddbClient = new DynamoDB.DocumentClient()
+const productsDdb = process.env.PRODUCTS_DDB!;
+const ddbClient = new DynamoDB.DocumentClient();
+const productRepository = new ProductRepository(ddbClient, productsDdb);
 
-const productRepository = new ProductRepository(ddbClient, productsDdb)
+// Constants for status codes and messages
+const STATUS_CODES = {
+  SUCCESS: 200,
+  BAD_REQUEST: 400,
+  NOT_FOUND: 404,
+};
 
-export async function handler(event: APIGatewayProxyEvent, 
-   context: Context): Promise<APIGatewayProxyResult> {
+const MESSAGES = {
+  BAD_REQUEST: "Bad request",
+  PRODUCT_NOT_FOUND: "Product not found",
+};
 
-   const lambdaRequestId = context.awsRequestId
-   const apiRequestId = event.requestContext.requestId
+export async function handler(
+  event: APIGatewayProxyEvent,
+  context: Context
+): Promise<APIGatewayProxyResult> {
+  const lambdaRequestId = context.awsRequestId;
+  const apiRequestId = event.requestContext.requestId;
 
-   console.log(`API Gateway RequestId: ${apiRequestId} - Lambda RequestId: ${lambdaRequestId}`)
-   
-   const method = event.httpMethod
-   if (event.resource === "/products") {
-      if (method === 'GET') {
-         console.log('GET /products')
+  console.log(`API Gateway RequestId: ${apiRequestId} - Lambda RequestId: ${lambdaRequestId}`);
 
-         const products = await productRepository.getAllProducts()
+  try {
+    const { resource, httpMethod } = event;
 
-         return {
-            statusCode: 200,
-            body: JSON.stringify(products)
-         }
-      }
-   } else if (event.resource === "/products/{id}") {
-      const productId = event.pathParameters!.id as string
-      console.log(`GET /products/${productId}`)
+    switch (resource) {
+      case "/products":
+        if (httpMethod === "GET") {
+          return await handleGetAllProducts();
+        }
+        break;
 
-      try {
-         const product = await productRepository.getProductById(productId)
-         return {
-            statusCode: 200,
-            body: JSON.stringify(product)
-         }   
-      } catch (error) {
-         console.error((<Error>error).message)
-         return {
-            statusCode: 404,
-            body: (<Error>error).message
-         }
-      }
-   }
+      case "/products/{id}":
+        return await handleGetProductById(event);
+    }
 
-   return {
-      statusCode: 400,
-      body: JSON.stringify({
-         message: "Bad request"
-      })
-   }
+    return createResponse(STATUS_CODES.BAD_REQUEST, { message: MESSAGES.BAD_REQUEST });
+  } catch (error) {
+    console.error("Unhandled error:", error);
+    return createResponse(STATUS_CODES.BAD_REQUEST, { message: MESSAGES.BAD_REQUEST });
+  }
+}
+
+async function handleGetAllProducts(): Promise<APIGatewayProxyResult> {
+  console.log("GET /products");
+
+  try {
+    const products = await productRepository.getAllProducts();
+    return createResponse(STATUS_CODES.SUCCESS, products);
+  } catch (error) {
+    console.error("Error fetching products:", error);
+    return createResponse(STATUS_CODES.BAD_REQUEST, { message: MESSAGES.BAD_REQUEST });
+  }
+}
+
+async function handleGetProductById(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
+  const productId = event.pathParameters?.id;
+
+  if (!productId) {
+    console.error("Product ID is missing");
+    return createResponse(STATUS_CODES.BAD_REQUEST, { message: MESSAGES.BAD_REQUEST });
+  }
+
+  console.log(`GET /products/${productId}`);
+
+  try {
+    const product = await productRepository.getProductById(productId);
+    return createResponse(STATUS_CODES.SUCCESS, product);
+  } catch (error) {
+    console.error("Error fetching product:", error);
+    return createResponse(STATUS_CODES.NOT_FOUND, { message: MESSAGES.PRODUCT_NOT_FOUND });
+  }
+}
+
+function createResponse(statusCode: number, body: any): APIGatewayProxyResult {
+  return {
+    statusCode,
+    body: JSON.stringify(body),
+  };
 }
